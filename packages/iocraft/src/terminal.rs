@@ -121,8 +121,15 @@ trait TerminalImpl: Write + Send {
     }
 
     fn is_raw_mode_enabled(&self) -> bool;
+    fn is_fullscreen(&self) -> bool {
+        false
+    }
     fn clear_canvas(&mut self) -> io::Result<()>;
     fn write_canvas(&mut self, canvas: &Canvas) -> io::Result<()>;
+    fn write_canvas_diff(&mut self, _prev: &Canvas, canvas: &Canvas) -> io::Result<()> {
+        self.clear_canvas()?;
+        self.write_canvas(canvas)
+    }
     fn event_stream(&mut self) -> io::Result<BoxStream<'static, TerminalEvent>>;
     fn dest(&mut self) -> &mut dyn Write;
     fn alt(&mut self) -> &mut dyn Write;
@@ -193,6 +200,10 @@ impl TerminalImpl for StdTerminal<'_> {
         self.raw_mode_enabled
     }
 
+    fn is_fullscreen(&self) -> bool {
+        self.fullscreen
+    }
+
     fn clear_canvas(&mut self) -> io::Result<()> {
         if self.prev_canvas_height == 0 {
             return Ok(());
@@ -218,6 +229,30 @@ impl TerminalImpl for StdTerminal<'_> {
     fn write_canvas(&mut self, canvas: &Canvas) -> io::Result<()> {
         self.prev_canvas_height = canvas.height() as _;
         canvas.write_ansi_without_final_newline(self)?;
+        Ok(())
+    }
+
+    fn write_canvas_diff(&mut self, prev: &Canvas, canvas: &Canvas) -> io::Result<()> {
+        if !self.fullscreen {
+            self.clear_canvas()?;
+            return self.write_canvas(canvas);
+        }
+
+        let max_height = prev.height().max(canvas.height());
+        for y in 0..max_height {
+            if prev.row_eq(canvas, y) {
+                continue;
+            }
+
+            self.dest.queue(cursor::MoveTo(0, y as u16))?;
+            if y < canvas.height() {
+                canvas.write_ansi_row_without_newline(y, &mut *self.dest)?;
+            } else {
+                self.dest
+                    .queue(terminal::Clear(terminal::ClearType::CurrentLine))?;
+            }
+        }
+        self.prev_canvas_height = canvas.height() as _;
         Ok(())
     }
 
@@ -442,7 +477,6 @@ impl<'a> Terminal<'a> {
         fullscreen: bool,
         mouse_capture: bool,
     ) -> io::Result<Self> {
-        // dest is the render destination, alt is the other stream
         let (dest, alt) = match output {
             Output::Stdout => (stdout, stderr),
             Output::Stderr => (stderr, stdout),
@@ -489,13 +523,16 @@ impl<'a> Terminal<'a> {
         self.inner.write_canvas(canvas)
     }
 
-    pub fn received_ctrl_c(&self) -> bool {
-        self.received_ctrl_c
+    pub fn write_canvas_diff(&mut self, prev: &Canvas, canvas: &Canvas) -> io::Result<()> {
+        self.inner.write_canvas_diff(prev, canvas)
     }
 
-    /// Returns which output handle is being used for TUI rendering.
-    pub fn output(&self) -> Output {
-        self.output
+    pub fn is_fullscreen(&self) -> bool {
+        self.inner.is_fullscreen()
+    }
+
+    pub fn received_ctrl_c(&self) -> bool {
+        self.received_ctrl_c
     }
 
     /// Returns a mutable reference to the stdout handle.

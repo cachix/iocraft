@@ -187,144 +187,148 @@ impl Canvas {
         }
     }
 
-    fn write_impl<W: Write>(
-        &self,
-        mut w: W,
-        ansi: bool,
-        omit_final_newline: bool,
-    ) -> io::Result<()> {
+    fn row(&self, y: usize) -> &[Cell] {
+        let Some(row) = self.cells.get(y) else {
+            return &[];
+        };
+        let last_non_empty = row.iter().rposition(|cell| !cell.is_empty());
+        &row[..last_non_empty.map_or(0, |i| i + 1)]
+    }
+
+    pub(crate) fn row_eq(&self, other: &Self, y: usize) -> bool {
+        self.row(y) == other.row(y)
+    }
+
+    fn write_row_impl<W: Write>(&self, row: &[Cell], mut w: W, ansi: bool) -> io::Result<()> {
         if ansi {
             write!(w, csi!("0m"))?;
         }
 
         let mut background_color = None;
         let mut text_style = CanvasTextStyle::default();
+        let mut col = 0;
+        let mut did_clear_line = false;
+        while col < row.len() {
+            let cell = &row[col];
 
-        for y in 0..self.cells.len() {
-            let row = &self.cells[y];
-            let last_non_empty = row.iter().rposition(|cell| !cell.is_empty());
-            let row = &row[..last_non_empty.map_or(0, |i| i + 1)];
-            let mut col = 0;
-            let mut did_clear_line = false;
-            while col < row.len() {
-                let cell = &row[col];
-
-                if ansi {
-                    // For certain changes, we need to reset all attributes.
-                    let mut needs_reset = false;
-                    if let Some(c) = &cell.character {
-                        if c.style.weight != text_style.weight && c.style.weight == Weight::Normal {
-                            needs_reset = true;
-                        }
-                        if !c.style.underline && text_style.underline {
-                            needs_reset = true;
-                        }
-                        if !c.style.italic && text_style.italic {
-                            needs_reset = true;
-                        }
-                    } else if text_style.underline {
+            if ansi {
+                let mut needs_reset = false;
+                if let Some(c) = &cell.character {
+                    if c.style.weight != text_style.weight && c.style.weight == Weight::Normal {
                         needs_reset = true;
                     }
-                    if needs_reset {
-                        write!(w, csi!("0m"))?;
-                        background_color = None;
-                        text_style = CanvasTextStyle::default();
+                    if !c.style.underline && text_style.underline {
+                        needs_reset = true;
                     }
-
-                    if let Some(c) = &cell.character {
-                        if c.style.color != text_style.color {
-                            write!(
-                                w,
-                                csi!("{}m"),
-                                Colored::ForegroundColor(c.style.color.unwrap_or(Color::Reset))
-                            )?;
-                        }
-
-                        if c.style.weight != text_style.weight {
-                            match c.style.weight {
-                                Weight::Bold => write!(w, csi!("{}m"), Attribute::Bold.sgr())?,
-                                Weight::Normal => {}
-                                Weight::Light => write!(w, csi!("{}m"), Attribute::Dim.sgr())?,
-                            }
-                        }
-
-                        if c.style.underline && !text_style.underline {
-                            write!(w, csi!("{}m"), Attribute::Underlined.sgr())?;
-                        }
-
-                        if c.style.italic && !text_style.italic {
-                            write!(w, csi!("{}m"), Attribute::Italic.sgr())?;
-                        }
-
-                        text_style = c.style;
+                    if !c.style.italic && text_style.italic {
+                        needs_reset = true;
                     }
+                } else if text_style.underline {
+                    needs_reset = true;
+                }
+                if needs_reset {
+                    write!(w, csi!("0m"))?;
+                    background_color = None;
+                    text_style = CanvasTextStyle::default();
                 }
 
                 if let Some(c) = &cell.character {
-                    col += c.value.width().max(1);
-                } else {
-                    col += 1;
-                }
-
-                if ansi && col >= self.width {
-                    // go ahead and clear until end of line. we need to do this before writing
-                    // the last character, because if we're at the end of the terminal row, the
-                    // cursor won't change position and the last character would be erased
-                    // if we did it later
-                    // see: https://github.com/ccbrown/iocraft/issues/83
-
-                    // make sure to reset the background before clearing
-                    // see: https://github.com/ccbrown/iocraft/issues/142
-                    if background_color.is_some() {
-                        write!(w, csi!("{}m"), Colored::BackgroundColor(Color::Reset))?;
-                        background_color = None;
+                    if c.style.color != text_style.color {
+                        write!(
+                            w,
+                            csi!("{}m"),
+                            Colored::ForegroundColor(c.style.color.unwrap_or(Color::Reset))
+                        )?;
                     }
 
-                    write!(w, csi!("K"))?;
-                    did_clear_line = true;
-                }
+                    if c.style.weight != text_style.weight {
+                        match c.style.weight {
+                            Weight::Bold => write!(w, csi!("{}m"), Attribute::Bold.sgr())?,
+                            Weight::Normal => {}
+                            Weight::Light => write!(w, csi!("{}m"), Attribute::Dim.sgr())?,
+                        }
+                    }
 
-                if ansi && cell.background_color != background_color {
-                    write!(
-                        w,
-                        csi!("{}m"),
-                        Colored::BackgroundColor(cell.background_color.unwrap_or(Color::Reset))
-                    )?;
-                    background_color = cell.background_color;
-                }
+                    if c.style.underline && !text_style.underline {
+                        write!(w, csi!("{}m"), Attribute::Underlined.sgr())?;
+                    }
 
-                if let Some(c) = &cell.character {
-                    write!(w, "{}{}", c.value, " ".repeat(c.required_padding()))?;
-                } else {
-                    w.write_all(b" ")?;
+                    if c.style.italic && !text_style.italic {
+                        write!(w, csi!("{}m"), Attribute::Italic.sgr())?;
+                    }
+
+                    text_style = c.style;
                 }
             }
-            if ansi {
-                // if the background color is set, we need to reset it
+
+            if let Some(c) = &cell.character {
+                col += c.value.width().max(1);
+            } else {
+                col += 1;
+            }
+
+            if ansi && col >= self.width {
                 if background_color.is_some() {
                     write!(w, csi!("{}m"), Colored::BackgroundColor(Color::Reset))?;
                     background_color = None;
                 }
-                if !did_clear_line {
-                    // clear until end of line
-                    write!(w, csi!("K"))?;
-                }
+
+                write!(w, csi!("K"))?;
+                did_clear_line = true;
             }
+
+            if ansi && cell.background_color != background_color {
+                write!(
+                    w,
+                    csi!("{}m"),
+                    Colored::BackgroundColor(cell.background_color.unwrap_or(Color::Reset))
+                )?;
+                background_color = cell.background_color;
+            }
+
+            if let Some(c) = &cell.character {
+                write!(w, "{}{}", c.value, " ".repeat(c.required_padding()))?;
+            } else {
+                w.write_all(b" ")?;
+            }
+        }
+        if ansi {
+            if background_color.is_some() {
+                write!(w, csi!("{}m"), Colored::BackgroundColor(Color::Reset))?;
+            }
+            if !did_clear_line {
+                write!(w, csi!("K"))?;
+            }
+            write!(w, csi!("0m"))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn write_ansi_row_without_newline<W: Write>(
+        &self,
+        y: usize,
+        w: W,
+    ) -> io::Result<()> {
+        self.write_row_impl(self.row(y), w, true)
+    }
+
+    fn write_impl<W: Write>(
+        &self,
+        mut w: W,
+        ansi: bool,
+        omit_final_newline: bool,
+    ) -> io::Result<()> {
+        for y in 0..self.cells.len() {
+            self.write_row_impl(self.row(y), &mut w, ansi)?;
             let is_final_line = y == self.cells.len() - 1;
             if !omit_final_newline || !is_final_line {
                 if ansi {
-                    if is_final_line {
-                        write!(w, csi!("0m"))?;
-                    }
                     // add a carriage return in case we're in raw mode
                     w.write_all(b"\r\n")?;
                 } else {
                     w.write_all(b"\n")?;
                 }
             }
-        }
-        if ansi && omit_final_newline {
-            write!(w, csi!("0m"))?;
         }
         w.flush()?;
         Ok(())

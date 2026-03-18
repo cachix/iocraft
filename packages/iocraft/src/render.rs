@@ -471,6 +471,13 @@ impl<'a> Tree<'a> {
                 if output.did_clear_terminal_output || prev_canvas.as_ref() != Some(&output.canvas)
                 {
                     if !output.did_clear_terminal_output {
+                        if term.is_fullscreen() {
+                            if let Some(previous_canvas) = prev_canvas.as_ref() {
+                                term.write_canvas_diff(previous_canvas, &output.canvas)?;
+                                prev_canvas = Some(output.canvas);
+                                return Ok(());
+                            }
+                        }
                         term.clear_canvas()?;
                     }
                     term.write_canvas(&output.canvas)?;
