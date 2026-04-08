@@ -5,6 +5,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use quote::{quote, ToTokens};
+use std::sync::atomic::{AtomicU64, Ordering};
 use syn::{
     braced, parenthesized,
     parse::{Parse, ParseStream, Parser},
@@ -15,7 +16,6 @@ use syn::{
     DeriveInput, Error, Expr, FieldValue, FnArg, GenericParam, Generics, Ident, ItemFn, ItemStruct,
     Lifetime, Lit, Member, Pat, Result, Token, Type, TypePath, WhereClause, WherePredicate,
 };
-use uuid::Uuid;
 
 enum ParsedElementChild {
     Element(ParsedElement),
@@ -73,7 +73,11 @@ impl ToTokens for ParsedElement {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         let ty = &self.ty;
 
-        let decl_key = Uuid::new_v4().as_u128();
+        // Use a deterministic counter instead of random UUIDs to ensure
+        // reproducible builds. Proc macro expansion order is deterministic,
+        // so the counter produces stable keys across compilations.
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let decl_key = COUNTER.fetch_add(1, Ordering::Relaxed) as u128;
 
         let key = self
             .props

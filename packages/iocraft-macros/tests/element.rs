@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use iocraft::{element, AnyElement, Component, Element, Percent, Props};
+use iocraft::{element, AnyElement, Component, Element, ElementKey, Percent, Props};
 
 #[derive(Default)]
 struct MyComponent;
@@ -171,4 +171,24 @@ fn generics() {
         MyGenericComponent<i32>(items: vec![0])
     };
     assert_eq!(vec![0], e.props.items);
+}
+
+#[test]
+fn deterministic_keys() {
+    // Verify that element keys are deterministic across invocations.
+    // This is important for reproducible builds: the element! macro must
+    // produce the same output on every compilation.
+    fn make_elements() -> (Element<'static, MyComponent>, Element<'static, MyComponent>) {
+        let a = element!(MyComponent);
+        let b = element!(MyComponent);
+        (a, b)
+    }
+    let (a1, b1) = make_elements();
+    let (a2, b2) = make_elements();
+    assert_eq!(a1.key, a2.key, "same call site should produce the same key");
+    assert_eq!(b1.key, b2.key, "same call site should produce the same key");
+    assert_ne!(
+        a1.key, b1.key,
+        "different call sites should produce different keys"
+    );
 }
